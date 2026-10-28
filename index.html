@@ -825,6 +825,16 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
 .croq{display:flex;flex-direction:column;gap:8px}
 .croq img{max-width:100%;max-height:220px;object-fit:contain;border:1px solid var(--line);border-radius:8px;background:#fff;align-self:flex-start}
 .croq .acts{display:flex;gap:8px;flex-wrap:wrap}
+.croq img{cursor:zoom-in}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:5px 12px;font-size:.9rem;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+.chip[aria-pressed="true"]::before{content:"✓";font-weight:700}
+.f.bad .chips{outline:1px solid var(--bad);outline-offset:4px;border-radius:6px}
+#dlgImg{width:auto;max-width:calc(100% - 24px);max-height:calc(100% - 24px);padding:0;background:#fff}
+#dlgImg img{display:block;max-width:calc(100vw - 24px);max-height:calc(100vh - 90px);object-fit:contain}
+#dlgImg .bar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--navy);color:#fff;font-weight:600}
+#dlgImg .bar button{background:transparent;border:0;color:#fff;font-size:1.5rem;cursor:pointer;line-height:1;padding:2px 8px}
 .btn-pdf{background:var(--ok-bg);color:var(--ok)}
 
 /* Mapa para croquis */
@@ -960,13 +970,15 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
         <select id="asignado"></select>
         <span class="hint">El funcionario que tomó el pedido.</span>
       </div>
-      <div class="f" id="w-estudio">
-        <label for="estudio">Lo estudió</label>
-        <input id="estudio" maxlength="60" placeholder="Nombre y apellido" autocomplete="off" list="dlPersonas">
-        <span class="hint">Se completa al tomar el pedido.</span>
-        <span class="err">Escribí nombre y apellido.</span>
+      <div class="f full" id="w-estudio">
+        <label id="lblEstudio">Lo estudiaron</label>
+        <div class="chips" id="estudioChips" role="group" aria-labelledby="lblEstudio"></div>
+        <input id="estudioOtro" maxlength="60" placeholder="Agregar otra persona (nombre y apellido) y Enter" autocomplete="off" list="dlPersonas" aria-label="Agregar otra persona">
+        <input type="hidden" id="estudio">
+        <span class="hint">Podés marcar a más de una persona. Al tomar el pedido se marca a quien lo toma.</span>
+        <span class="err">Marcá al menos una persona (con nombre y apellido).</span>
       </div>
-      <div class="f" id="w-realizo">
+      <div class="f full" id="w-realizo">
         <label for="realizo">Realizó el cambio</label>
         <input id="realizo" maxlength="60" placeholder="Nombre y apellido" autocomplete="off" list="dlPersonas">
         <span class="hint">Obligatorio al marcarlo implementado.</span>
@@ -1010,7 +1022,7 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
       <div class="f full">
         <label for="croqFile">Croquis o mapa</label>
         <div class="croq">
-          <img id="croqImg" alt="Croquis del cambio" hidden>
+          <img id="croqImg" alt="Croquis del cambio (tocá para verlo grande)" title="Tocá para verlo grande" hidden>
           <div class="acts">
             <input id="croqFile" type="file" accept="image/*" hidden>
             <button class="btn btn-plain btn-sm" type="button" id="bMap">Dibujar en mapa</button>
@@ -1043,6 +1055,10 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
   </div>
 </aside>
 
+<dialog id="dlgImg" aria-label="Croquis">
+  <div class="bar"><span id="dlgImgTit">Croquis</span><button type="button" id="bImgClose" aria-label="Cerrar">×</button></div>
+  <img id="dlgImgSrc" alt="Croquis en tamaño completo">
+</dialog>
 <dialog id="dlgR" aria-labelledby="dlgRTitle">
   <div class="d-head"><h2 id="dlgRTitle">Respaldo de pedidos</h2><button type="button" id="bRClose" aria-label="Cerrar">×</button></div>
   <div class="dl-body">
@@ -1327,7 +1343,7 @@ function renderList(){
           <div class="kind">${esc(r.tipo)}${r.paradas?`<small>Paradas: ${esc(r.paradas)}</small>`:""}</div>
           <p class="why">${esc(r.motivo)}</p>
           <div class="people">
-            <span>Estudió: <b>${r.estudio?esc(r.estudio):"pendiente"}</b></span>
+            <span>${splitNombres(r.estudio).length>1?"Estudiaron":"Estudió"}: <b>${r.estudio?esc(r.estudio):"pendiente"}</b></span>
             <span>Realizó: <b>${r.realizo?esc(r.realizo):"pendiente"}</b></span>
           </div>
         </div>
@@ -1342,7 +1358,7 @@ function renderList(){
       </article>`;
     }).join("");
   }
-  const personas = [...new Set(nombresFunc().concat(records.flatMap(r=>[r.estudio,r.realizo])).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+  const personas = [...new Set(nombresFunc().concat(records.flatMap(r=>splitNombres(r.estudio).concat([r.realizo]))).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
   $("dlPersonas").innerHTML = personas.map(p=>`<option value="${esc(p)}">`).join("");
 }
 function renderFuncList(){
@@ -1382,6 +1398,22 @@ async function tomar(id){
     actualizado: new Date().toISOString()
   });
   try{ await putPedido(id, data); toast("Pedido tomado: "+(r.linea||"")); }catch(e){ saveErr(e); }
+}
+
+/* ---------- varias personas en "Lo estudiaron" ---------- */
+function splitNombres(s){ return String(s||"").split(/\s*[,;]\s*|\s+y\s+/).map(x=>titleCase(x)).filter(Boolean); }
+let estSel = [];
+function renderEstudio(){
+  const nombres = [...new Set(nombresFunc().concat(estSel))];
+  $("estudioChips").innerHTML = nombres.map(n=>`<button type="button" class="chip" aria-pressed="${estSel.includes(n)}" data-n="${esc(n)}">${esc(n)}</button>`).join("");
+  $("estudio").value = estSel.join(", ");
+}
+function setEstudio(v){ estSel = splitNombres(v); renderEstudio(); }
+function addOtroEstudio(){
+  const n = titleCase($("estudioOtro").value); if(!n) return true;
+  if(!fullName(n)){ mark("estudio", true); return false; }
+  if(!estSel.some(x=>x.toLowerCase()===n.toLowerCase())) estSel.push(n);
+  $("estudioOtro").value = ""; renderEstudio(); mark("estudio", false); return true;
 }
 
 /* ---------- croquis ---------- */
@@ -1520,7 +1552,7 @@ function datosSugeridos(r){
 }
 function buildReport(r){
   const ul = arr => arr.length ? "<ul>"+arr.map(x=>"<li>"+esc(x)+"</li>").join("")+"</ul>" : "<p>—</p>";
-  const resp = [r.estudio?"Estudió: "+esc(r.estudio):"", r.realizo?"Realizó: "+esc(r.realizo):"", r.expediente?"Expediente: "+esc(r.expediente):""].filter(Boolean).join(" &nbsp;·&nbsp; ");
+  const resp = [r.estudio?(splitNombres(r.estudio).length>1?"Estudiaron: ":"Estudió: ")+esc(r.estudio):"", r.realizo?"Realizó: "+esc(r.realizo):"", r.expediente?"Expediente: "+esc(r.expediente):""].filter(Boolean).join(" &nbsp;·&nbsp; ");
   $("report").innerHTML = `
   <table class="page">
     <thead><tr><td><div class="r-head"><img src="${LOGO}" alt="Intendencia de Montevideo"><div class="rule"></div>
@@ -1552,7 +1584,7 @@ function printReport(r){
 function formAsRecord(){
   const v = k=>$(k).value.trim();
   return { tipo:v("tipo"), linea:v("linea"), paradas:v("paradas"), tema:v("tema"), intro:$("intro").value, datos:$("datos").value,
-    normativa:$("normativa").value, croquis, estudio:titleCase(v("estudio")), realizo:titleCase(v("realizo")),
+    normativa:$("normativa").value, croquis, estudio:estSel.join(", "), realizo:titleCase(v("realizo")),
     expediente:v("expediente"), fechaImpl:v("fechaImpl"), fechaPedido:v("fechaPedido") };
 }
 
@@ -1569,6 +1601,7 @@ function openForm(id){
   const extraAsig = r && r.asignado && !names.includes(r.asignado) ? [r.asignado] : [];
   fillSelect($("asignado"), names.concat(extraAsig), "Sin asignar");
   F.forEach(k=>{ $(k).value = r ? (r[k]||"") : ""; });
+  setEstudio(r ? r.estudio : ""); $("estudioOtro").value = "";
   $("empresaOtra").value = "";
   if(r && r.empresa && !EMPRESAS.includes(r.empresa)){ $("empresa").value="Otra…"; $("empresaOtra").value=r.empresa; }
   else if(!r && current!=="Todas"){ if(EMPRESAS.includes(current)) $("empresa").value=current; else { $("empresa").value="Otra…"; $("empresaOtra").value=current; } }
@@ -1605,7 +1638,7 @@ function validate(){
   ok = mark("paradas", TIPOS_PARADA.includes(v("tipo")) && !v("paradas")) && ok;
   ok = mark("motivo", !v("motivo") || v("motivo").length>140) && ok;
   const avanzado = v("estado")!=="Recibido";
-  ok = mark("estudio", (avanzado && !fullName(v("estudio"))) || (v("estudio") && !fullName(v("estudio")))) && ok;
+  ok = mark("estudio", (avanzado && !estSel.length) || estSel.some(n=>!fullName(n))) && ok;
   const impl = v("estado")==="Implementado";
   ok = mark("realizo", (impl && !fullName(v("realizo"))) || (v("realizo") && !fullName(v("realizo")))) && ok;
   ok = mark("fechaPedido", !v("fechaPedido")) && ok;
@@ -1615,7 +1648,8 @@ function validate(){
 async function submit(){
   // si falta quien lo estudió o lo realizó, se propone quien lo trabaja
   if($("estado").value==="Implementado" && !$("realizo").value.trim() && $("asignado").value) $("realizo").value = $("asignado").value;
-  if($("estado").value!=="Recibido" && !$("estudio").value.trim() && $("asignado").value) $("estudio").value = $("asignado").value;
+  if(!addOtroEstudio()){ $("estudioOtro").focus(); return; }
+  if($("estado").value!=="Recibido" && !estSel.length && $("asignado").value) setEstudio($("asignado").value);
   if(!validate()){ const b=document.querySelector("#form .f.bad input,#form .f.bad select,#form .f.bad textarea"); if(b) b.focus(); return; }
   if(!$("tema").value.trim()) $("tema").value = temaSugerido({tipo:$("tipo").value, linea:$("linea").value.trim()});
   if(!$("datos").value.trim()) $("datos").value = datosSugeridos({linea:$("linea").value.trim(), paradas:$("paradas").value.trim()});
@@ -1627,7 +1661,7 @@ async function submit(){
     tipo: v("tipo"), linea: v("linea"), paradas: v("paradas"),
     motivo: v("motivo").slice(0,140),
     asignado,
-    estudio: v("estudio") ? titleCase(v("estudio")) : "",
+    estudio: estSel.join(", "),
     realizo: v("realizo") ? titleCase(v("realizo")) : "",
     estado: v("estado"), expediente: v("expediente"),
     fechaPedido: v("fechaPedido"), fechaImpl: v("fechaImpl"),
@@ -1764,6 +1798,17 @@ document.addEventListener("paste", async e=>{
   catch(err){ toast("No se pudo usar la imagen pegada"); }
 });
 $("bCroqDel").onclick = ()=>{ croquis = ""; showCroq(); };
+$("estudioChips").addEventListener("click", e=>{
+  const b = e.target.closest(".chip"); if(!b) return;
+  const n = b.dataset.n; estSel = estSel.includes(n) ? estSel.filter(x=>x!==n) : estSel.concat([n]);
+  renderEstudio(); mark("estudio", false);
+});
+$("estudioOtro").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); addOtroEstudio(); } });
+$("estudioOtro").addEventListener("change", addOtroEstudio);
+function verImagen(src, tit){ if(!src) return; $("dlgImgSrc").src = src; $("dlgImgTit").textContent = tit || "Croquis"; $("dlgImg").showModal(); }
+$("croqImg").addEventListener("click", ()=>verImagen(croquis, "Croquis · "+($("linea").value.trim() ? "Línea "+$("linea").value.trim() : "pedido")));
+$("bImgClose").onclick = ()=>$("dlgImg").close();
+$("dlgImg").addEventListener("click", e=>{ if(e.target===$("dlgImg") || e.target===$("dlgImgSrc")) $("dlgImg").close(); });
 $("croqFile").addEventListener("change", async ()=>{
   const f = $("croqFile").files[0]; if(!f) return;
   try{ croquis = await fileToCroquis(f); showCroq(); }
