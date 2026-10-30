@@ -1075,6 +1075,7 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
   <div class="d-foot">
     <button class="btn btn-danger" type="button" id="bDelete" style="display:none">Eliminar</button>
     <div class="r">
+      <button class="btn btn-plain" type="button" id="bMail" hidden>Reenviar aviso</button>
       <button class="btn btn-pdf" type="button" id="bPdf">Generar PDF</button>
       <button class="btn btn-plain" type="button" id="bCancel">Cancelar</button>
       <button class="btn btn-gold" type="button" id="bSave">Guardar pedido</button>
@@ -1166,6 +1167,12 @@ let colP = null, colF = null;
 const SUPA_URL = "https://pxtfluntsvnwqctrycoj.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB4dGZsdW50c3Zud3FjdHJ5Y29qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMxMTQ0MTEsImV4cCI6MjEwODY5MDQxMX0.HqHOiihVgak128gSrsFJ_tI6Z-khF0WO1KJYkaOT9Sg";
 const SB = { on: !!(SUPA_URL && SUPA_KEY), timer: null };
+
+/* ---------- aviso por mail al implementar (EmailJS) ----------
+   Completar con los datos de emailjs.com: Service ID, Template ID y Public Key.
+   El destinatario se configura en la plantilla de EmailJS, no acá. Vacíos = sin aviso. */
+const MAIL = { service: "service_1a1k43w", template: "template_rhxfuod", key: "WensBiJf-3zSUW8aV" };
+const MAIL_ON = !!(MAIL.service && MAIL.template && MAIL.key);
 const COLS = ["empresa","tipo","linea","paradas","motivo","asignado","estudio","realizo","estado","expediente","fecha_pedido","fecha_impl","tema","intro","datos","normativa","cargo","tomado","creado","actualizado","actualizado_por"];
 const toSnake = k => k==="fechaPedido" ? "fecha_pedido" : k==="fechaImpl" ? "fecha_impl" : k;
 const toCamel = k => k==="fecha_pedido" ? "fechaPedido" : k==="fecha_impl" ? "fechaImpl" : k;
@@ -1793,6 +1800,7 @@ function closeForm(){ $("drawer").classList.remove("open"); $("scrim").classList
 function syncForm(){
   $("w-empresaOtra").style.display = $("empresa").value==="Otra…" ? "" : "none";
   $("bPdf").hidden = $("estado").value!=="Implementado";
+  $("bMail").hidden = !MAIL_ON || !editingId || $("estado").value!=="Implementado";
   const n = $("motivo").value.length, c=$("cMotivo"); c.textContent = n+" / 140"; c.classList.toggle("near", n>=120);
 }
 function mark(id, bad){ $("w-"+id).classList.toggle("bad", !!bad); return !bad; }
@@ -1845,12 +1853,53 @@ async function submit(){
   $("bSave").disabled = true;
   try{
     await putPedido(editingId, data); closeForm();
+    if(recienImpl && MAIL_ON) enviarAviso(data).then(ok=>setTimeout(()=>toast(ok ? "Aviso enviado por mail" : "No se pudo enviar el aviso por mail. Podés reenviarlo desde el pedido."), 1500));
     if(recienImpl && data.tema && data.intro){ toast("Pedido implementado: generando el PDF"); setTimeout(()=>printReport(data), 300); }
     else if(recienImpl){ toast("Pedido guardado. Completá Tema e Introducción para generar el PDF"); }
     else toast("Pedido guardado");
   }
   catch(e){ saveErr(e); }
   finally{ $("bSave").disabled = false; }
+}
+
+/* ---------- aviso por mail ---------- */
+function textoAviso(r){
+  const L = [];
+  L.push("Se implementó un cambio solicitado por "+(r.empresa||"—")+".");
+  L.push("");
+  L.push("Tipo de cambio: "+(r.tipo||"—"));
+  L.push("Línea / variante: "+(r.linea||"—"));
+  if(r.paradas) L.push("Paradas: "+r.paradas);
+  L.push("Motivo del pedido: "+(r.motivo||"—"));
+  L.push((splitNombres(r.estudio).length>1?"Lo estudiaron: ":"Lo estudió: ")+(r.estudio||"—"));
+  L.push("Realizó el cambio: "+(r.realizo||"—"));
+  L.push("Fecha de implementación: "+(fmtDate(r.fechaImpl)||"—"));
+  if(r.expediente) L.push("Expediente / nota: "+r.expediente);
+  if(r.tema){ L.push(""); L.push("Tema: "+r.tema); }
+  if(String(r.intro||"").trim()){ L.push(""); L.push("Introducción:"); lines(r.intro).forEach(x=>L.push("• "+x)); }
+  if(String(r.datos||"").trim()){ L.push(""); L.push("Datos:"); lines(r.datos).forEach(x=>L.push("• "+x)); }
+  if(/^https?:/.test(location.href)){ L.push(""); L.push("Ver en la herramienta: "+location.href.split("#")[0]); }
+  L.push(""); L.push("Aviso automático de Cambio empresa · UPTU");
+  return L.join("\n");
+}
+async function enviarAviso(r){
+  if(!MAIL_ON) return false;
+  const asunto = "Cambio implementado – Línea "+(r.linea||"—")+" – "+(r.empresa||"");
+  try{
+    const res = await fetch("https://api.emailjs.com/api/v1.0/email/send", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({service_id:MAIL.service, template_id:MAIL.template, user_id:MAIL.key,
+        template_params:{asunto, resumen:textoAviso(r), resumen_html:esc(textoAviso(r)).replace(/\n/g,"<br>"), linea:r.linea||"", empresa:r.empresa||"", tipo:r.tipo||"",
+          motivo:r.motivo||"", estudiaron:r.estudio||"", realizo:r.realizo||"", fecha:fmtDate(r.fechaImpl)||"", enviado_por:getMe()}})
+    });
+    return res.ok;
+  }catch(e){ return false; }
+}
+function recordDelForm(){
+  const v = k=>$(k).value.trim();
+  return { empresa: v("empresa")==="Otra…" ? v("empresaOtra").toUpperCase() : v("empresa"), tipo:v("tipo"), linea:v("linea"), paradas:v("paradas"),
+    motivo:v("motivo"), estudio:estSel.join(", "), realizo:titleCase(v("realizo")), fechaImpl:v("fechaImpl"), expediente:v("expediente"),
+    tema:v("tema"), intro:$("intro").value, datos:$("datos").value };
 }
 
 /* ---------- export ---------- */
@@ -2004,6 +2053,13 @@ $("croqFile").addEventListener("change", async ()=>{
   catch(e){ toast("No se pudo usar esa imagen. Probá con un PNG o JPG más chico."); }
   $("croqFile").value = "";
 });
+$("bMail").onclick = async ()=>{
+  if(!confirm("¿Reenviar el aviso por mail de este pedido?")) return;
+  $("bMail").disabled = true;
+  const ok = await enviarAviso(recordDelForm());
+  $("bMail").disabled = false;
+  toast(ok ? "Aviso enviado por mail" : "No se pudo enviar el aviso por mail");
+};
 $("bPdf").onclick = ()=>{
   const ok = [mark("tema", !$("tema").value.trim()), mark("intro", !$("intro").value.trim())].every(Boolean);
   if(!ok){ toast("Completá Tema e Introducción para generar el PDF"); return; }
