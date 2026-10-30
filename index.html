@@ -831,6 +831,18 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
 .chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
 .chip[aria-pressed="true"]::before{content:"✓";font-weight:700}
 .f.bad .chips{outline:1px solid var(--bad);outline-offset:4px;border-radius:6px}
+.cfg{margin-top:8px;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+.cfg-head{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.cfg-tools{display:flex;gap:14px}
+.lnk{background:none;border:0;padding:0;color:var(--navy-2);font-weight:600;cursor:pointer;font-size:.88rem}
+:root[data-theme="dark"] .lnk{color:var(--gold)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .lnk{color:var(--gold)}}
+.cfg-list{max-height:320px;overflow:auto;display:flex;flex-direction:column;gap:10px}
+.cfg-sec h4{margin:0 0 4px;font-size:.92rem}
+.cfg-it{display:flex;gap:8px;align-items:flex-start;font-size:.9rem;padding:3px 0}
+.f .cfg-it input{margin-top:3px;flex:none;width:auto;padding:0}
+.f label.cfg-it{font-weight:400;font-size:.9rem;cursor:pointer}
+.cfg-acts{display:flex;gap:8px;flex-wrap:wrap}
 #dlgImg{width:auto;max-width:calc(100% - 24px);max-height:calc(100% - 24px);padding:0;background:#fff}
 #dlgImg img{display:block;max-width:calc(100vw - 24px);max-height:calc(100vh - 90px);object-fit:contain}
 #dlgImg .bar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--navy);color:#fff;font-weight:600}
@@ -1036,6 +1048,21 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
         <label for="datos">Datos</label>
         <textarea id="datos" rows="4" placeholder="Un dato por renglón: líneas, variantes, ubicación de paradas, puntos de control, coordenadas, zonas…"></textarea>
         <span class="hint">Cada renglón sale como un punto en el PDF.</span>
+        <div class="cfg">
+          <div class="cfg-head">
+            <input id="cfgFile" type="file" accept=".xlsx" hidden>
+            <button class="btn btn-plain btn-sm" type="button" id="bCfg">Cargar diferencias de configuración (DTI)</button>
+            <span class="hint" id="cfgInfo">Planilla .xlsx "DifConfigSTM…" que arma DTI.</span>
+          </div>
+          <div id="cfgBox" hidden>
+            <div class="cfg-tools"><button type="button" class="lnk" id="cfgAll">Marcar todo</button><button type="button" class="lnk" id="cfgNone">Desmarcar todo</button></div>
+            <div id="cfgList" class="cfg-list"></div>
+            <div class="cfg-acts">
+              <button class="btn btn-gold btn-sm" type="button" id="bCfgAdd">Pasar lo marcado a Datos</button>
+              <button class="btn btn-plain btn-sm" type="button" id="bCfgClose">Cerrar</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="f full">
         <label for="normativa">Actualización normativa</label>
@@ -1416,6 +1443,146 @@ function addOtroEstudio(){
   $("estudioOtro").value = ""; renderEstudio(); mark("estudio", false); return true;
 }
 
+/* ---------- diferencias de configuración (planilla de DTI) ---------- */
+async function readXlsx(file){
+  const buf = await file.arrayBuffer(), u8 = new Uint8Array(buf), dv = new DataView(buf), td = new TextDecoder();
+  let e = u8.length - 22; while(e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+  if(e < 0) throw new Error("no es xlsx");
+  const n = dv.getUint16(e+10, true); let p = dv.getUint32(e+16, true); const files = {};
+  for(let i=0; i<n; i++){
+    const nl = dv.getUint16(p+28,true), xl = dv.getUint16(p+30,true), cl = dv.getUint16(p+32,true);
+    files[td.decode(u8.subarray(p+46, p+46+nl))] = {m:dv.getUint16(p+10,true), cs:dv.getUint32(p+20,true), off:dv.getUint32(p+42,true)};
+    p += 46+nl+xl+cl;
+  }
+  async function get(name){
+    const f = files[name]; if(!f) return null;
+    const st = f.off + 30 + dv.getUint16(f.off+26,true) + dv.getUint16(f.off+28,true), data = u8.subarray(st, st+f.cs);
+    if(f.m === 0) return td.decode(data);
+    const out = await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer();
+    return td.decode(out);
+  }
+  const xml = t => new DOMParser().parseFromString(t, "application/xml");
+  const tag = (el, n) => [...el.getElementsByTagName(n)];
+  const ss = []; const sst = await get("xl/sharedStrings.xml");
+  if(sst) tag(xml(sst), "si").forEach(si=>ss.push(tag(si,"t").map(t=>t.textContent).join("")));
+  const wbx = xml(await get("xl/workbook.xml")), rels = xml(await get("xl/_rels/workbook.xml.rels"));
+  const target = {}; tag(rels,"Relationship").forEach(r=>target[r.getAttribute("Id")] = r.getAttribute("Target"));
+  const col = ref => { let c = 0; for(const ch of ref.replace(/\d+/g,"")) c = c*26 + ch.charCodeAt(0) - 64; return c-1; };
+  const out = {};
+  for(const sh of tag(wbx,"sheet")){
+    const rid = sh.getAttribute("r:id") || sh.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships","id");
+    let t = target[rid] || ""; t = t.startsWith("/") ? t.slice(1) : "xl/"+t.replace(/^\.\//,"");
+    const sx = await get(t); if(!sx) continue;
+    const rows = tag(xml(sx),"row").map(r=>{
+      const a = [];
+      tag(r,"c").forEach(c=>{
+        const ty = c.getAttribute("t"), v = c.getElementsByTagName("v")[0];
+        let val = ty==="inlineStr" ? tag(c,"t").map(x=>x.textContent).join("") : v ? v.textContent : "";
+        if(ty==="s") val = ss[+val]; else if(ty!=="str" && ty!=="inlineStr" && val!=="" && !isNaN(val)) val = +val;
+        a[col(c.getAttribute("r"))] = val;
+      });
+      return a;
+    });
+    const head = (rows.shift()||[]).map(h=>String(h||"").trim());
+    out[sh.getAttribute("name")] = rows.map(r=>{ const o = {}; head.forEach((h,i)=>{ if(h) o[h] = r[i]===undefined ? "" : r[i]; }); return o; });
+  }
+  return out;
+}
+const esNueva = r => /nueva/i.test(String(r.DIFF||""));
+const fIso = s => s ? fmtDate(String(s).slice(0,10)) : "";
+function distM(a,b){
+  const R = 6371000, r = x=>x*Math.PI/180, dLa = r(b.LATITUD-a.LATITUD), dLo = r(b.LONGITUD-a.LONGITUD);
+  const h = Math.sin(dLa/2)**2 + Math.cos(r(a.LATITUD))*Math.cos(r(b.LATITUD))*Math.sin(dLo/2)**2;
+  return Math.round(2*R*Math.asin(Math.sqrt(h)));
+}
+const listaCod = a => a.join(", ");
+function resumirConfig(T){
+  const secs = [], pn = {};
+  const ficha = T.T0_FICHA_TECNICA || [];
+  const fn = ficha.find(esNueva), fa = ficha.find(r=>!esNueva(r));
+  const titulo = fn ? "Configuración "+fn.ID_CONFIGURACION+" (versión "+[fn.VERSION_MAYOR,fn.VERSION_MENOR,fn.VERSION_CORRECCION].join(".")+", datos "+fn.VERSION_DATOS+") del "+fIso(fn.FECHA_GENERACION)
+    + (fa ? ", reemplaza a la "+fa.ID_CONFIGURACION+" del "+fIso(fa.FECHA_GENERACION) : "") + (fn.EMPRESA_COD!==undefined && fn.EMPRESA_COD!=="" ? " · código de empresa "+fn.EMPRESA_COD : "") : "";
+  // paradas y puntos de control
+  const lugares = (rows, cod, des, nom, nomPl)=>{
+    const g = {}; rows.forEach(r=>{ const k = r[cod]; (g[k] = g[k] || {})[esNueva(r)?"n":"a"] = r; });
+    const it = [];
+    Object.keys(g).sort((x,y)=>x-y).forEach(k=>{
+      const {a, n} = g[k], d = x=>String(x[des]||"").trim();
+      if(nom==="Parada") pn[k] = d(n||a);
+      if(a && n){
+        const cambios = []; if(d(a)!==d(n)) cambios.push(d(a)+" → "+d(n));
+        const m = distM(a,n); if(m>=1) cambios.push("se trasladó "+m+" m (lat "+n.LATITUD+", lon "+n.LONGITUD+")");
+        if(String(a.FECHA_BAJA||"")!==String(n.FECHA_BAJA||"") && n.FECHA_BAJA) cambios.push("baja desde "+fIso(n.FECHA_BAJA));
+        it.push(nom+" "+k+(d(a)===d(n)?" ("+d(n)+")":"")+": "+(cambios.join("; ")||"cambian otros datos"));
+      } else if(n) it.push(nom+" "+k+" ("+d(n)+"): alta (lat "+n.LATITUD+", lon "+n.LONGITUD+")");
+      else it.push(nom+" "+k+" ("+d(a)+"): baja");
+    });
+    if(it.length) secs.push({t:nomPl, items:it});
+  };
+  lugares(T.T20_PARADAS||[], "PARADA_COD", "PARADA_DESCRIPCION", "Parada", "Paradas");
+  lugares(T.T21_PUNTOS_CONTROL||[], "PTO_CONTROL_COD", "PTO_CONTROL_DESCRIPCION", "Punto de control", "Puntos de control");
+  const pd = c => pn[c] ? c+" ("+pn[c]+")" : String(c);
+  // variantes: recorridos
+  const vg = {}; (T.T3_ETAPAS_VARIANTE||[]).forEach(r=>{ const v = r.VARIANTE_COD; (vg[v] = vg[v] || {a:{}, n:{}})[esNueva(r)?"n":"a"][r.ORDINAL] = r; });
+  const grupos = {};
+  Object.keys(vg).sort((x,y)=>x-y).forEach(v=>{
+    const A = vg[v].a, N = vg[v].n, oa = Object.keys(A).sort((x,y)=>x-y), on = Object.keys(N).sort((x,y)=>x-y);
+    let txt;
+    if(!on.length) txt = "se da de baja la variante";
+    else if(!oa.length) txt = "variante nueva ("+on.length+" paradas)";
+    else{
+      const pa = oa.map(o=>A[o].PARADA_COD), pnv = on.map(o=>N[o].PARADA_COD), parts = [];
+      const qui = pa.filter(x=>!pnv.includes(x)), agr = pnv.filter(x=>!pa.includes(x));
+      if(qui.length) parts.push("se quita"+(qui.length>1?"n las paradas ":" la parada ")+qui.map(pd).join(", "));
+      if(agr.length) parts.push("se agrega"+(agr.length>1?"n las paradas ":" la parada ")+agr.map(pd).join(", "));
+      if(!qui.length && !agr.length && pa.join()!==pnv.join()) parts.push("cambia el orden de las paradas "+[...new Set(pa)].sort((x,y)=>x-y).map(pd).join(" y "));
+      const ini = o=>String(o.PRIMERA_PARADA_ETAPA_COD), fin = o=>String(o.ULTIMA_PARADA_ETAPA_COD);
+      const ia = [...new Set(oa.map(o=>ini(A[o])))], inn = [...new Set(on.map(o=>ini(N[o])))], fa2 = [...new Set(oa.map(o=>fin(A[o])))], fnn = [...new Set(on.map(o=>fin(N[o])))];
+      if(ia.join()!==inn.join()) parts.push("la etapa empieza en "+inn.map(pd).join("/")+" (antes "+ia.map(pd).join("/")+")");
+      if(fa2.join()!==fnn.join()) parts.push("la etapa termina en "+fnn.map(pd).join("/")+" (antes "+fa2.map(pd).join("/")+")");
+      txt = parts.join("; ") || "cambian zonas o fechas de las etapas";
+    }
+    (grupos[txt] = grupos[txt] || []).push(v);
+  });
+  const vi = Object.entries(grupos).sort((a,b)=>b[1].length-a[1].length)
+    .map(([t,vs])=>(vs.length>1?"Variantes ":"Variante ")+listaCod(vs)+": "+t);
+  if(vi.length) secs.push({t:"Recorridos de variantes", items:vi});
+  // puntos de control por variante
+  const pc = {}; (T.T40_VARIANTES_PTOS_CONTROL||[]).forEach(r=>{ const k = (esNueva(r)?"Se asignan":"Se quitan")+" puntos de control"; ((pc[k] = pc[k] || {})[r.VARIANTE_COD] = pc[k][r.VARIANTE_COD] || []).push(r.PTO_CONTROL_COD); });
+  const pci = []; Object.entries(pc).forEach(([k,m])=>Object.entries(m).forEach(([v,cs])=>pci.push(k+" a la variante "+v+": "+cs.join(", "))));
+  if(pci.length) secs.push({t:"Puntos de control por variante", items:pci});
+  // otras tablas
+  const conocidas = ["T0_FICHA_TECNICA","T3_ETAPAS_VARIANTE","T20_PARADAS","T21_PUNTOS_CONTROL","T40_VARIANTES_PTOS_CONTROL"];
+  Object.entries(T).forEach(([h,rows])=>{
+    if(conocidas.includes(h) || !rows.length) return;
+    const nombre = h.replace(/^T\d+_/,"").replace(/_/g," ").toLowerCase();
+    const it = rows.map(r=>{
+      const vals = Object.entries(r).filter(([k,v])=>k!=="DIFF" && v!=="" && !/^FECHA_(BAJA|HASTA)$/.test(k)).map(([k,v])=>/^FECHA/.test(k)?k.replace(/_/g," ").toLowerCase()+" "+fIso(v):v);
+      return (esNueva(r)?"Alta":"Anterior")+": "+vals.join(" · ");
+    });
+    secs.push({t:nombre.charAt(0).toUpperCase()+nombre.slice(1), items:it});
+  });
+  return {titulo, secs};
+}
+let cfgRes = null;
+function renderCfg(){
+  if(!cfgRes) return;
+  // si el pedido tiene códigos de parada, se marcan de entrada solo los cambios que los mencionan
+  const cods = (($("paradas").value||"").match(/\d+/g)||[]);
+  const re = cods.length ? new RegExp("\\b("+cods.join("|")+")\\b") : null;
+  const chk = it => !re || re.test(it) ? " checked" : "";
+  $("cfgList").innerHTML = (cfgRes.titulo?`<label class="cfg-it"><input type="checkbox" checked data-cfg="t">${esc(cfgRes.titulo)}</label>`:"")
+    + cfgRes.secs.map((s,i)=>`<div class="cfg-sec"><h4>${esc(s.t)}</h4>${s.items.map((it,j)=>`<label class="cfg-it"><input type="checkbox"${chk(it)} data-cfg="${i}-${j}">${esc(it)}</label>`).join("")}</div>`).join("");
+  return cods.length;
+}
+function cfgSeleccion(){
+  const out = [];
+  $("cfgList").querySelectorAll("input[data-cfg]:checked").forEach(cb=>{
+    const k = cb.dataset.cfg; if(k==="t") out.push(cfgRes.titulo); else { const [i,j] = k.split("-").map(Number); out.push(cfgRes.secs[i].items[j]); }
+  });
+  return out;
+}
+
 /* ---------- croquis ---------- */
 let croquis = "";
 function showCroq(){
@@ -1602,6 +1769,7 @@ function openForm(id){
   fillSelect($("asignado"), names.concat(extraAsig), "Sin asignar");
   F.forEach(k=>{ $(k).value = r ? (r[k]||"") : ""; });
   setEstudio(r ? r.estudio : ""); $("estudioOtro").value = "";
+  cfgRes = null; $("cfgBox").hidden = true; $("cfgInfo").textContent = "Planilla .xlsx \"DifConfigSTM…\" que arma DTI.";
   $("empresaOtra").value = "";
   if(r && r.empresa && !EMPRESAS.includes(r.empresa)){ $("empresa").value="Otra…"; $("empresaOtra").value=r.empresa; }
   else if(!r && current!=="Todas"){ if(EMPRESAS.includes(current)) $("empresa").value=current; else { $("empresa").value="Otra…"; $("empresaOtra").value=current; } }
@@ -1798,6 +1966,27 @@ document.addEventListener("paste", async e=>{
   catch(err){ toast("No se pudo usar la imagen pegada"); }
 });
 $("bCroqDel").onclick = ()=>{ croquis = ""; showCroq(); };
+$("bCfg").onclick = ()=>$("cfgFile").click();
+$("cfgFile").addEventListener("change", async ()=>{
+  const f = $("cfgFile").files[0]; $("cfgFile").value = ""; if(!f) return;
+  $("cfgInfo").textContent = "Leyendo "+f.name+"…";
+  try{
+    const T = await readXlsx(f);
+    if(!T.T0_FICHA_TECNICA && !T.T3_ETAPAS_VARIANTE && !T.T20_PARADAS) throw new Error("formato");
+    cfgRes = resumirConfig(T); const filtro = renderCfg(); $("cfgBox").hidden = false;
+    const n = cfgRes.secs.reduce((a,s)=>a+s.items.length,0), m = $("cfgList").querySelectorAll("input:checked").length - (cfgRes.titulo?1:0);
+    $("cfgInfo").textContent = f.name+": "+n+" cambios. "+(filtro ? "Quedaron marcados los "+m+" que mencionan las paradas del pedido; revisá y ajustá." : "Desmarcá los que no son de este pedido.");
+  }catch(e){ cfgRes = null; $("cfgBox").hidden = true; $("cfgInfo").textContent = "No se pudo leer: tiene que ser la planilla .xlsx de diferencias de configuración que arma DTI."; }
+});
+$("cfgAll").onclick = ()=>$("cfgList").querySelectorAll("input").forEach(c=>c.checked = true);
+$("cfgNone").onclick = ()=>$("cfgList").querySelectorAll("input").forEach(c=>c.checked = false);
+$("bCfgClose").onclick = ()=>{ $("cfgBox").hidden = true; };
+$("bCfgAdd").onclick = ()=>{
+  const sel = cfgSeleccion(); if(!sel.length){ toast("No hay nada marcado"); return; }
+  const actual = $("datos").value.trim(), sug = datosSugeridos({linea:$("linea").value.trim(), paradas:$("paradas").value.trim()}).trim();
+  $("datos").value = (actual && actual!==sug ? actual+"\n" : (actual ? actual+"\n" : "")) + sel.join("\n");
+  $("cfgBox").hidden = true; $("datos").focus(); toast(sel.length+" datos agregados a la sección Datos");
+};
 $("estudioChips").addEventListener("click", e=>{
   const b = e.target.closest(".chip"); if(!b) return;
   const n = b.dataset.n; estSel = estSel.includes(n) ? estSel.filter(x=>x!==n) : estSel.concat([n]);
