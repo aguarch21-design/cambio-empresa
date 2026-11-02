@@ -2157,7 +2157,7 @@ function buildReport(r){
   <div class="r-foot">Edificio Anexo Soriano 1426 Piso 5 CP. 11200. Montevideo, Uruguay<br>Tel: (598 2) 1950 8720 / 1950 8702 stc@imm.gub.uy</div>`;
 }
 function printReport(r){
-  if(!r.tema || !String(r.intro||"").trim()){ toast("Completá Tema e Introducción para generar el PDF"); return false; }
+  if(!r.tema) r.tema = temaSugerido(r);
   buildReport(r);
   const t = document.title; document.title = nombreArchivo(r);
   const imgs = [...$("report").querySelectorAll("img")].map(i=>i.complete?Promise.resolve():new Promise(ok=>{i.onload=i.onerror=ok;}));
@@ -2239,7 +2239,7 @@ async function subirInforme(id, r, blob){
 }
 // Genera el PDF, lo descarga y, si corresponde, lo deja guardado en la base junto al pedido
 async function hacerPDF(r, {descargar=true, guardar=false}={}){
-  if(!r.tema || !String(r.intro||"").trim()){ toast("Completá Tema e Introducción para generar el PDF"); return {ok:false}; }
+  if(!r.tema) r.tema = temaSugerido(r);
   if(r.croquis===undefined && r.id) r.croquis = await getCroquis(r).catch(()=>"");
   if(!pdfListo()){ printReport(r); return {ok:true}; }
   const blob = generarPDF(r);
@@ -2355,8 +2355,8 @@ async function submit(){
       const r = Object.assign({}, data, {id:idP});
       (async ()=>{
         let url = "";
-        if(r.tema && String(r.intro||"").trim()){ toast("Pedido implementado: generando el PDF"); url = (await hacerPDF(r, {descargar:true, guardar:true}).catch(()=>({}))).url || ""; }
-        else toast("Pedido guardado. Completá Tema e Introducción para generar el PDF");
+        toast("Pedido implementado: generando el PDF");
+        url = (await hacerPDF(r, {descargar:true, guardar:true}).catch(()=>({}))).url || "";
         if(MAIL_ON && !avisoYaEnviado){
           const primero = await reclamarAviso(idP).catch(()=>false);
           if(!primero) return; // otro ya lo mandó
@@ -2579,8 +2579,6 @@ $("bMail").onclick = async ()=>{
   toast(ok ? "Aviso enviado por mail" : "No se pudo enviar el aviso por mail");
 };
 $("bPdf").onclick = ()=>{
-  const ok = [mark("tema", !$("tema").value.trim()), mark("intro", !$("intro").value.trim())].every(Boolean);
-  if(!ok){ toast("Completá Tema e Introducción para generar el PDF"); return; }
   const r = Object.assign(formAsRecord(), {id:editingId});
   hacerPDF(r, {descargar:true, guardar:!!editingId && $("estado").value==="Implementado"}).catch(()=>toast("No se pudo generar el PDF"));
 };
