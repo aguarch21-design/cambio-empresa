@@ -1173,7 +1173,7 @@ const SB = { on: !!(SUPA_URL && SUPA_KEY), timer: null };
    El destinatario se configura en la plantilla de EmailJS, no acá. Vacíos = sin aviso. */
 const MAIL = { service: "service_1a1k43w", template: "template_rhxfuod", key: "WensBiJf-3zSUW8aV" };
 const MAIL_ON = !!(MAIL.service && MAIL.template && MAIL.key);
-const COLS = ["empresa","tipo","linea","paradas","motivo","asignado","estudio","realizo","estado","expediente","fecha_pedido","fecha_impl","tema","intro","datos","normativa","cargo","tomado","creado","actualizado","actualizado_por"];
+const COLS = ["empresa","tipo","linea","paradas","motivo","asignado","estudio","realizo","estado","expediente","fecha_pedido","fecha_impl","tema","intro","datos","normativa","cargo","tomado","creado","actualizado","actualizado_por","aviso_enviado"];
 const toSnake = k => k==="fechaPedido" ? "fecha_pedido" : k==="fechaImpl" ? "fecha_impl" : k;
 const toCamel = k => k==="fecha_pedido" ? "fechaPedido" : k==="fecha_impl" ? "fechaImpl" : k;
 function toRow(d){
@@ -1182,7 +1182,7 @@ function toRow(d){
     const c = toSnake(k); if(d[k]===undefined || (!COLS.includes(c) && c!=="croquis")) return;
     o[c] = d[k]==="" && /^(fecha_|tomado)/.test(c) ? null : d[k];
   });
-  delete o.creado; delete o.actualizado; // los pone la base
+  delete o.creado; delete o.actualizado; delete o.aviso_enviado; // los pone la base (el aviso solo se marca al enviarlo)
   o.actualizado_por = getMe();
   return o;
 }
@@ -1199,16 +1199,25 @@ async function sb(path, opt={}){
 /* Para cuidar la cuota de Supabase: la lista completa se baja al abrir y cada 10 minutos;
    entre medio solo se piden los pedidos modificados desde la última vez. */
 let lastSync = "", lastFull = 0;
+function colsSel(){ return COLS.filter(c=>!(SB.noAviso && c==="aviso_enviado")).join(","); }
 async function sbLoad(full){
+  try{ return await sbLoad0(full); }
+  catch(e){
+    // base sin la columna aviso_enviado (falta correr el SQL nuevo): seguir funcionando sin ella
+    if(!SB.noAviso && (e.code==="42703" || /aviso_enviado/.test(e.message||""))){ SB.noAviso = true; return sbLoad0(true); }
+    throw e;
+  }
+}
+async function sbLoad0(full){
   if(full || !lastSync || Date.now()-lastFull > 600000){
     const [p, f] = await Promise.all([
-      sb("pedidos?select=id,"+COLS.join(",")+"&order=creado.desc"),
+      sb("pedidos?select=id,"+colsSel()+"&order=creado.desc"),
       sb("funcionarios?select=id,nombre&activo=eq.true&order=nombre")
     ]);
     records = p.map(fromRow); funcionarios = f; lastFull = Date.now();
   } else {
     const [p, f] = await Promise.all([
-      sb("pedidos?select=id,"+COLS.join(",")+"&actualizado=gt."+encodeURIComponent(lastSync)),
+      sb("pedidos?select=id,"+colsSel()+"&actualizado=gt."+encodeURIComponent(lastSync)),
       sb("funcionarios?select=id,nombre&activo=eq.true&order=nombre")
     ]);
     hideNotice();
@@ -1850,10 +1859,21 @@ async function submit(){
   if(asignado && (!prev || prev.asignado!==asignado)) data.tomado = new Date().toISOString();
   if(!asignado) delete data.tomado;
   const recienImpl = data.estado==="Implementado" && (!prev || prev.estado!=="Implementado");
+  let avisoYaEnviado = false;
   $("bSave").disabled = true;
+  const editingIdGuardado = editingId;
+  // modo local / Claude: la marca del aviso viaja en el propio pedido
+  if(!SB.on && recienImpl && MAIL_ON){ if(prev && prev.aviso_enviado) avisoYaEnviado = true; else data.aviso_enviado = new Date().toISOString(); }
   try{
     await putPedido(editingId, data); closeForm();
-    if(recienImpl && MAIL_ON) enviarAviso(data).then(ok=>setTimeout(()=>toast(ok ? "Aviso enviado por mail" : "No se pudo enviar el aviso por mail. Podés reenviarlo desde el pedido."), 1500));
+    if(recienImpl && MAIL_ON && !avisoYaEnviado){
+      const idAviso = editingIdGuardado || (SB.on ? (records.find(x=>x.creado && claveP(x)===claveP(data))||{}).id : null);
+      reclamarAviso(idAviso).then(async primero=>{
+        if(!primero) return; // otro ya lo mandó
+        const ok = await enviarAviso(data);
+        setTimeout(()=>toast(ok ? "Aviso enviado por mail" : "No se pudo enviar el aviso por mail. Podés reenviarlo desde el pedido."), 1500);
+      }).catch(()=>{});
+    }
     if(recienImpl && data.tema && data.intro){ toast("Pedido implementado: generando el PDF"); setTimeout(()=>printReport(data), 300); }
     else if(recienImpl){ toast("Pedido guardado. Completá Tema e Introducción para generar el PDF"); }
     else toast("Pedido guardado");
@@ -1863,6 +1883,13 @@ async function submit(){
 }
 
 /* ---------- aviso por mail ---------- */
+// Marca el aviso como enviado en la base y devuelve true solo a quien lo marcó primero:
+// así el mail no sale dos veces aunque haya varias pestañas o personas guardando a la vez.
+async function reclamarAviso(id){
+  if(!SB.on || SB.noAviso || !id) return true;
+  const r = await sb("pedidos?id=eq."+encodeURIComponent(id)+"&aviso_enviado=is.null", {method:"PATCH", body:{aviso_enviado:new Date().toISOString()}, prefer:"return=representation"});
+  return !!(r && r.length);
+}
 function textoAviso(r){
   const L = [];
   L.push("Se implementó un cambio solicitado por "+(r.empresa||"—")+".");
