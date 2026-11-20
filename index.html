@@ -843,8 +843,8 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
 .f .cfg-it input{margin-top:3px;flex:none;width:auto;padding:0}
 .f label.cfg-it{font-weight:400;font-size:.9rem;cursor:pointer}
 .cfg-acts{display:flex;gap:8px;flex-wrap:wrap}
-#dlgImg{width:auto;max-width:calc(100% - 24px);max-height:calc(100% - 24px);padding:0;background:#fff}
-#dlgImg img{display:block;max-width:calc(100vw - 24px);max-height:calc(100vh - 90px);object-fit:contain}
+#dlgImg{width:fit-content;height:fit-content;max-width:none;max-height:none;padding:0;background:#fff;overflow:hidden}
+#dlgImg img{display:block}
 #dlgImg .bar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--navy);color:#fff;font-weight:600}
 #dlgImg .bar button{background:transparent;border:0;color:#fff;font-size:1.5rem;cursor:pointer;line-height:1;padding:2px 8px}
 .btn-pdf{background:var(--ok-bg);color:var(--ok)}
@@ -864,6 +864,8 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
 .map-help .r{display:flex;gap:8px}
 .leaflet-container{font:inherit}
 .drawing .leaflet-container{cursor:crosshair}
+.vtx{background:#fff;border:2px solid #003580;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:move}
+.modo-borrar .leaflet-interactive{cursor:pointer}
 
 /* Informe (solo impresión) */
 #report{display:none}
@@ -1122,6 +1124,9 @@ dialog::backdrop{background:rgba(6,14,30,.45)}
     <button class="tool" type="button" data-tool="anterior" aria-pressed="false"><span class="sw" style="background:repeating-linear-gradient(90deg,#d0312d 0 5px,transparent 5px 8px)"></span>Recorrido anterior</button>
     <button class="tool" type="button" data-tool="pnueva" aria-pressed="false"><span class="dot" style="background:#1f9d55"></span>Parada nueva</button>
     <button class="tool" type="button" data-tool="psup" aria-pressed="false"><span class="dot" style="background:#d0312d"></span>Parada suprimida</button>
+    <span class="sep"></span>
+    <button class="tool" type="button" data-tool="editar" aria-pressed="false" title="Arrastrá los puntos para corregir recorridos y paradas">Mover puntos</button>
+    <button class="tool" type="button" data-tool="borrar" aria-pressed="false" title="Tocá un recorrido o una parada para borrarlo">Borrar uno</button>
     <span class="sep"></span>
     <button class="tool" type="button" id="bUndo">Deshacer</button>
     <button class="tool" type="button" id="bClear">Borrar todo</button>
@@ -1573,13 +1578,13 @@ const SB = { on: !!(SUPA_URL && SUPA_KEY), timer: null, missing: new Set() };
    El destinatario se configura en la plantilla de EmailJS, no acá. Vacíos = sin aviso. */
 const MAIL = { service: "service_1a1k43w", template: "template_rhxfuod", key: "WensBiJf-3zSUW8aV" };
 const MAIL_ON = !!(MAIL.service && MAIL.template && MAIL.key);
-const COLS = ["empresa","tipo","linea","paradas","motivo","asignado","estudio","realizo","estado","expediente","fecha_pedido","fecha_impl","tema","intro","datos","normativa","cargo","tomado","creado","actualizado","actualizado_por","aviso_enviado","informe_url"];
+const COLS = ["empresa","tipo","linea","paradas","motivo","asignado","estudio","realizo","estado","expediente","fecha_pedido","fecha_impl","tema","intro","datos","normativa","cargo","tomado","creado","actualizado","actualizado_por","aviso_enviado","informe_url","croquis_dibujo"];
 const toSnake = k => k==="fechaPedido" ? "fecha_pedido" : k==="fechaImpl" ? "fecha_impl" : k;
 const toCamel = k => k==="fecha_pedido" ? "fechaPedido" : k==="fecha_impl" ? "fechaImpl" : k;
 function toRow(d){
   const o = {};
   Object.keys(d).forEach(k=>{
-    const c = toSnake(k); if(d[k]===undefined || (!COLS.includes(c) && c!=="croquis")) return;
+    const c = toSnake(k); if(d[k]===undefined || (!COLS.includes(c) && c!=="croquis") || SB.missing.has(c)) return;
     o[c] = d[k]==="" && /^(fecha_|tomado)/.test(c) ? null : d[k];
   });
   delete o.creado; delete o.actualizado; delete o.aviso_enviado; delete o.informe_url; // los pone la base o se marcan aparte
@@ -1606,7 +1611,7 @@ async function sbLoad(full){
     try{ return await sbLoad0(full || i>0); }
     catch(e){
       const m = /column \w+\.(\w+) does not exist/.exec(e.message||"");
-      if(e.code==="42703" && m && ["aviso_enviado","informe_url"].includes(m[1]) && !SB.missing.has(m[1])){ SB.missing.add(m[1]); continue; }
+      if(e.code==="42703" && m && ["aviso_enviado","informe_url","croquis_dibujo"].includes(m[1]) && !SB.missing.has(m[1])){ SB.missing.add(m[1]); continue; }
       throw e;
     }
   }
@@ -2005,6 +2010,7 @@ function cfgSeleccion(){
 /* ---------- croquis ---------- */
 let croquis = "";
 function showCroq(){
+  if($("bMap")) $("bMap").textContent = dibujo ? "Editar dibujo del mapa" : "Dibujar en mapa";
   $("croqImg").hidden = !croquis; if(croquis) $("croqImg").src = croquis; else $("croqImg").removeAttribute("src");
   $("bCroqDel").hidden = !croquis; $("bCroq").textContent = croquis ? "Cambiar imagen" : "Agregar imagen";
 }
@@ -2056,11 +2062,8 @@ function initMap(){
   map.attributionControl.setPrefix(false);
   setBase(lsGet(LS_BASE,"imm"));
   map.on("click", e=>{
-    if(!tool) return;
-    if(PSTY[tool]){
-      const lyr = L.circleMarker(e.latlng,{radius:8,color:"#fff",weight:3,fillColor:PSTY[tool],fillOpacity:1}).addTo(map);
-      mItems.push({kind:tool, layer:lyr, pts:[e.latlng]}); return;
-    }
+    if(!tool || tool==="editar" || tool==="borrar") return;
+    if(PSTY[tool]){ addPunto(tool, e.latlng); return; }
     if(!drawing){ drawing = {kind:tool, pts:[e.latlng], layer:L.polyline([e.latlng], LSTY[tool]).addTo(map)}; }
     else{ drawing.pts.push(e.latlng); drawing.layer.setLatLngs(drawing.pts); }
   });
@@ -2069,26 +2072,90 @@ function initMap(){
 function finishDrawing(){
   if(!drawing) return;
   const pts = drawing.pts.filter((p,i,a)=>i===0 || map.latLngToContainerPoint(p).distanceTo(map.latLngToContainerPoint(a[i-1]))>3);
-  if(pts.length<2) map.removeLayer(drawing.layer);
-  else { drawing.layer.setLatLngs(pts); mItems.push({kind:drawing.kind, layer:drawing.layer, pts}); }
+  map.removeLayer(drawing.layer);
+  if(pts.length>=2) addLinea(drawing.kind, pts);
   drawing = null;
+}
+function conBorrado(it){
+  it.layer.on("click", ev=>{
+    if(tool!=="borrar") return;
+    L.DomEvent.stopPropagation(ev);
+    map.removeLayer(it.layer); mItems = mItems.filter(x=>x!==it);
+  });
+  mItems.push(it); return it;
+}
+function addPunto(kind, ll){
+  const lyr = L.circleMarker(ll,{radius:8,color:"#fff",weight:3,fillColor:PSTY[kind],fillOpacity:1}).addTo(map);
+  return conBorrado({kind, layer:lyr, pts:[L.latLng(ll)]});
+}
+function addLinea(kind, pts){
+  const lyr = L.polyline(pts, LSTY[kind]).addTo(map);
+  return conBorrado({kind, layer:lyr, pts:pts.map(p=>L.latLng(p))});
+}
+/* mover puntos: aparecen cuadraditos en cada vértice y en cada parada para arrastrarlos */
+let handles = [];
+function salirEdicion(){ handles.forEach(h=>map.removeLayer(h)); handles = []; }
+function entrarEdicion(){
+  salirEdicion();
+  const icono = L.divIcon({className:"vtx", iconSize:[12,12]});
+  mItems.forEach(it=>{
+    it.pts.forEach((p,i)=>{
+      const h = L.marker(p, {draggable:true, icon:icono, keyboard:false}).addTo(map);
+      h.on("drag", ()=>{
+        it.pts[i] = h.getLatLng();
+        if(PSTY[it.kind]) it.layer.setLatLng(it.pts[i]); else it.layer.setLatLngs(it.pts);
+      });
+      handles.push(h);
+    });
+  });
+}
+/* el dibujo se guarda con el pedido para poder volver a editarlo */
+let dibujo = "", dibujoPend = false;
+const r6 = x => Math.round(x*1e6)/1e6;
+function dibujoActual(){
+  if(!map) return dibujo;
+  finishDrawing();
+  if(!mItems.length) return "";
+  const c = map.getCenter();
+  return JSON.stringify({v:1, base:baseKey, c:[r6(c.lat), r6(c.lng)], z:map.getZoom(),
+    items:mItems.map(i=>({k:i.kind, p:i.pts.map(q=>[r6(q.lat), r6(q.lng)])}))});
+}
+function cargarDibujo(json){
+  let d; try{ d = JSON.parse(json); }catch(e){ return false; }
+  if(!d || !Array.isArray(d.items)) return false;
+  d.items.forEach(it=>{
+    const pts = (it.p||[]).map(a=>L.latLng(a[0], a[1]));
+    if(PSTY[it.k] && pts.length) addPunto(it.k, pts[0]);
+    else if(LSTY[it.k] && pts.length>1) addLinea(it.k, pts);
+  });
+  if(d.base && d.base!==baseKey) setBase(d.base);
+  if(d.c) map.setView(d.c, d.z||15);
+  return true;
 }
 function setTool(t){
   finishDrawing();
+  if(tool==="editar") salirEdicion();
   tool = tool===t ? null : t;
+  if(tool==="editar") entrarEdicion();
+  $("dlgMap").classList.toggle("modo-borrar", tool==="borrar");
   document.querySelectorAll("#mapBar [data-tool]").forEach(b=>b.setAttribute("aria-pressed", String(b.dataset.tool===tool)));
-  $("dlgMap").classList.toggle("drawing", !!tool);
+  $("dlgMap").classList.toggle("drawing", !!tool && tool!=="editar" && tool!=="borrar");
   $("mapHint").textContent = !tool ? "Elegí una herramienta, o mové el mapa para encuadrar el cambio."
+    : tool==="editar" ? "Arrastrá los cuadraditos para corregir los recorridos y las paradas."
+    : tool==="borrar" ? "Tocá un recorrido o una parada para borrarlo."
     : PSTY[tool] ? "Hacé clic en el mapa para ubicar cada parada."
     : "Hacé clic para marcar el recorrido y doble clic para terminarlo.";
 }
-function resetMapDrawing(){ if(!map) { mItems = []; return; } finishDrawing(); mItems.forEach(i=>map.removeLayer(i.layer)); mItems = []; }
+function resetMapDrawing(){ if(!map) { mItems = []; return; } finishDrawing(); salirEdicion(); mItems.forEach(i=>map.removeLayer(i.layer)); mItems = []; }
 function openMap(){
   $("dlgMap").showModal();
   if(!window.L){ $("mapHint").textContent = "No se pudo cargar el mapa."; return; }
   if(!map) initMap();
-  setTimeout(()=>{ map.invalidateSize(); if(mItems.length) map.fitBounds(L.featureGroup(mItems.map(i=>i.layer)).getBounds().pad(.25)); }, 60);
+  let restaurado = false;
+  if(dibujoPend){ dibujoPend = false; if(dibujo) restaurado = cargarDibujo(dibujo); }
+  setTimeout(()=>{ map.invalidateSize(); if(mItems.length && !restaurado) map.fitBounds(L.featureGroup(mItems.map(i=>i.layer)).getBounds().pad(.25)); }, 60);
   setTool(null);
+  if(restaurado) $("mapHint").textContent = "Este es el dibujo guardado del pedido: podés agregar, mover o borrar y volver a usarlo como croquis.";
 }
 function captureMap(){
   finishDrawing();
@@ -2277,6 +2344,7 @@ function openForm(id){
   if(r && !r.tema) $("tema").value = temaSugerido(r);
   if(r && !r.datos) $("datos").value = datosSugeridos(r);
   croquis = r && r.croquis ? r.croquis : ""; showCroq(); $("croqFile").value = ""; resetMapDrawing();
+  dibujo = r && r.croquis_dibujo ? r.croquis_dibujo : ""; dibujoPend = true; showCroq();
   if(SB.on && r && r.croquis===undefined){
     croquis = undefined; // se trae aparte para que la lista cargue rápido
     getCroquis(r).then(c=>{ if(editingId===r.id && croquis===undefined){ croquis = c; showCroq(); } }).catch(()=>{});
@@ -2337,7 +2405,7 @@ async function submit(){
     creado: prev && prev.creado ? prev.creado : new Date().toISOString(),
     cargo: prev && prev.cargo ? prev.cargo : getMe(),
     tema: v("tema"), intro: $("intro").value.trim(), datos: $("datos").value.trim(), normativa: $("normativa").value.trim(),
-    croquis,
+    croquis, croquis_dibujo: dibujo,
     actualizado: new Date().toISOString()
   });
   if(asignado && (!prev || prev.asignado!==asignado)) data.tomado = new Date().toISOString();
@@ -2509,13 +2577,20 @@ $("mapBar").addEventListener("click", e=>{ const b = e.target.closest("[data-too
 $("bUndo").onclick = ()=>{
   if(drawing){ drawing.pts.pop(); if(drawing.pts.length) drawing.layer.setLatLngs(drawing.pts); else { map.removeLayer(drawing.layer); drawing = null; } return; }
   const it = mItems.pop(); if(it) map.removeLayer(it.layer);
+  if(tool==="editar") entrarEdicion();
 };
-$("bClear").onclick = ()=>{ if(mItems.length || drawing) resetMapDrawing(); };
+$("bClear").onclick = ()=>{ if((mItems.length || drawing) && confirm("¿Borrar todo el dibujo?")){ resetMapDrawing(); if(tool==="editar") setTool("editar"); } };
 $("bMapClose").onclick = $("bMapCancel").onclick = ()=>{ finishDrawing(); $("dlgMap").close(); };
 $("dlgMap").addEventListener("cancel", e=>{ if(drawing){ e.preventDefault(); finishDrawing(); } });
-$("bMapUse").onclick = ()=>{
+$("bMapUse").onclick = async ()=>{
   if(!map) return;
-  try{ croquis = toCroquis(captureMap()); showCroq(); $("dlgMap").close(); toast("Croquis agregado al pedido"); }
+  map.invalidateSize();
+  await new Promise(ok=>{
+    if(!baseL || !baseL.isLoading || !baseL.isLoading()) return setTimeout(ok, 150);
+    const t = setTimeout(ok, 4000); baseL.once("load", ()=>{ clearTimeout(t); setTimeout(ok, 150); });
+  });
+  if(tool==="editar") setTool(null);
+  try{ croquis = toCroquis(captureMap()); dibujo = dibujoActual(); showCroq(); $("dlgMap").close(); toast("Croquis agregado al pedido. El dibujo queda guardado para editarlo después."); }
   catch(e){
     if(e && e.name==="SecurityError") toast(baseKey==="imm"
       ? "El fondo de la IM no deja capturarlo desde acá. Cambiá a OpenStreetMap, o capturá con Win+Shift+S y pegá con Ctrl+V en el pedido."
@@ -2531,7 +2606,7 @@ document.addEventListener("paste", async e=>{
   try{ croquis = await fileToCroquis(it.getAsFile()); showCroq(); toast("Captura pegada como croquis"); }
   catch(err){ toast("No se pudo usar la imagen pegada"); }
 });
-$("bCroqDel").onclick = ()=>{ croquis = ""; showCroq(); };
+$("bCroqDel").onclick = ()=>{ croquis = ""; dibujo = ""; resetMapDrawing(); showCroq(); };
 $("bCfg").onclick = ()=>$("cfgFile").click();
 $("cfgFile").addEventListener("change", async ()=>{
   const f = $("cfgFile").files[0]; $("cfgFile").value = ""; if(!f) return;
@@ -2560,7 +2635,19 @@ $("estudioChips").addEventListener("click", e=>{
 });
 $("estudioOtro").addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); addOtroEstudio(); } });
 $("estudioOtro").addEventListener("change", addOtroEstudio);
-function verImagen(src, tit){ if(!src) return; $("dlgImgSrc").src = src; $("dlgImgTit").textContent = tit || "Croquis"; $("dlgImg").showModal(); }
+// El visor se ajusta al tamaño exacto de la imagen (sin bordes en blanco), lo más grande que entre en la pantalla
+function ajustarVisor(){
+  const im = $("dlgImgSrc"), w = im.naturalWidth, h = im.naturalHeight; if(!w || !h) return;
+  const k = Math.min((innerWidth - 32)/w, (innerHeight - 96)/h, 2);
+  im.style.width = Math.round(w*k)+"px"; im.style.height = Math.round(h*k)+"px";
+}
+function verImagen(src, tit){
+  if(!src) return;
+  const im = $("dlgImgSrc"); im.style.width = im.style.height = "";
+  im.onload = ajustarVisor; im.src = src; if(im.complete) ajustarVisor();
+  $("dlgImgTit").textContent = tit || "Croquis"; $("dlgImg").showModal();
+}
+addEventListener("resize", ()=>{ if($("dlgImg").open) ajustarVisor(); });
 $("croqImg").addEventListener("click", ()=>verImagen(croquis, "Croquis · "+($("linea").value.trim() ? "Línea "+$("linea").value.trim() : "pedido")));
 $("bImgClose").onclick = ()=>$("dlgImg").close();
 $("dlgImg").addEventListener("click", e=>{ if(e.target===$("dlgImg") || e.target===$("dlgImgSrc")) $("dlgImg").close(); });
